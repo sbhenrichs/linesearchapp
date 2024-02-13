@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import pbpfunctions as pbpf
 import pybet
+import unicodedata
+import altair as alt
 
 # STREAMLIT PREFS
 st.set_page_config(layout='wide')
@@ -28,6 +30,17 @@ ALL_TEAMS.insert(0, 'Any Team')
 scores = pd.read_csv('./current-scoreboard.csv')
 player_stats = pd.read_csv('./player-advanced.csv').drop(columns=['Unnamed: 0'])
 player_stats = player_stats[player_stats['MP'] >= 48].fillna(0)
+REDHEX = "#EA638C"
+GREENHEX = '#4FB286'
+
+# REMOVE ACCENTS FROM PLAYER NAMES
+def remove_accents(input: str):
+   normalized = unicodedata.normalize('NFD', input)
+   return ''.join(c for c in normalized if not unicodedata.combining(c))
+
+def encode_colors(input: int):
+   if input == 1: return GREENHEX
+   else: return REDHEX
 
 # FILTER PLAYERS BY POSITION
 def filter_players(
@@ -57,7 +70,9 @@ def filter_players(
       ((df['STL%'] >= stl_min) & (df['STL%'] <= stl_max)) &
       ((df['BLK%'] >= blk_min) & (df['BLK%'] <= blk_max))
    ]
-   return list(df.Player)
+   to_include = list(df.Player)
+   adj = [remove_accents(name) for name in to_include]
+   return adj
 
 # GET PLAYERS
 def get_players(team: str):
@@ -170,6 +185,7 @@ def get_team_data(
       orb_max, drb_min, drb_max, ast_min, ast_max, stl_min, stl_max, blk_min, blk_max
    )
    df = df[df['Name'].isin(players_to_include)]
+   print(set(df.Name))
    # Filter for a specific team
    if team != "Any Team":
       df = df[df['Opponent'] == team]
@@ -202,22 +218,23 @@ def get_team_data(
    else:
       return df
 
+st.markdown('''
+            # **LineSearch :dart: :basketball:**
+            A simple prop researcher for the NBA. Have a suggestion or a wishlist? Email info@linesearch.net
+''')
 player_based, team_based = st.tabs(['Player-Based Research', 'Opponent-Based Research'])
-
+   
 with player_based:
    # PAGE HEADER
-   st.header("Player-Based NBA Prop Research")
    st.markdown('''
+               ### Player-Based NBA Prop Research
                Below are all player counting statistics this season. Utilize the filters to parse down
-               the data. For example, you can answer the question *how many points per game does Damian Lillard average
-               when playing 25 minutes or less?*
+               the data. For example, you can answer the question *how many points per game does Shai Gilgeous-Alexander average
+               on the road with 2 or more days of rest?*
                ''')
 
    # FILTERS
    with st.container(border=True):
-      st.markdown('''
-                  All player positions and advanced statistics come from [Cleaning the Glass](https://cleaningtheglass.com). Note that positions are estimated and may not reflect your best ideas of player positions. If you need help with getting started with research, you can see some examples [here](https://x.com).
-                  ''')
       # Form Row 1
       row1 = st.columns([1, 1, 1, 1])
       players = row1[0].selectbox('Player', ALL_PLAYERS, placeholder='Choose player') # Filter the player(s)
@@ -247,6 +264,7 @@ with player_based:
       else:
          out_game = []
       
+      
    # DISPLAY DF
    st.dataframe(
       get_data(
@@ -260,8 +278,8 @@ with player_based:
    prop_data = get_data(
       players, opponents, min_low, min_high, hab, wls, mov_min, mov_max, game_split, rest, in_game, out_game
    )
-   base['Game'] = base['Name'] + ' ' + base['Opponent'] + ' ' + base['Date'].astype(str)
-   prop_data['Game'] = prop_data['Name'] + ' ' + prop_data['Opponent'] + ' ' + prop_data['Date'].astype(str)
+   base['Game'] = base['Opponent'] + ' ' + base['Date'].astype(str)
+   prop_data['Game'] = prop_data['Opponent'] + ' ' + prop_data['Date'].astype(str)
    
    # Table with splits
    splits_table = pd.DataFrame(columns=['Split', 'Name', 'Minutes', 'Points', 'Rebounds', 'Assists', 'FG3M', 'Steals', 'Blocks'])
@@ -291,7 +309,7 @@ with player_based:
    st.dataframe(splits_table, use_container_width=True)
 
    st.markdown('''
-      ## Prop Report
+      ### Prop Report
       If you'd like to do research on particular prop with the given filters above, set the information here. It will provide hit rates, expected value, and more based off your selected splits
       from above.
    ''')
@@ -323,23 +341,41 @@ with player_based:
       ev_under = f'+{ev_under}u'
    
    # Display prop research data
-   st.markdown('### Prop Results')
    st.markdown('### ')
-   prop_information = st.columns([2, 1])
-   prop_information[0].bar_chart(prop_data, x='Game', y=prop_type)
-   prop_information[1].markdown(
+   prop_information = st.columns([1, 2])
+   prop_data = prop_data.sort_values(by='Date')
+   prop_data['Hit'] = prop_data[prop_type] > prop_line
+   prop_data['Hit'] = prop_data['Hit'].apply(lambda x: encode_colors(x))
+   prop_data = prop_data.set_index('Date')
+   # Create altair chart with the data
+   chart = alt.Chart(prop_data).mark_bar().encode(
+      x=alt.X('Game:N', sort=alt.EncodingSortField(field='Date', order='ascending'), title='Game'),
+      y=alt.Y(prop_type),
+      color=alt.Color('Hit:N', scale=None)
+   ).properties(title=f"{player_name}'s Performance on {prop_line} {prop_type}", height=500).configure_view(strokeWidth=0)
+   prop_information[1].altair_chart(chart, use_container_width=True)
+   # Over Color
+   if hit_rate > .5: over_color = GREENHEX
+   else: over_color = "#EA1F4B"
+   # Under Color
+   if hit_rate < .5: under_color = GREENHEX
+   else: under_color = GREENHEX
+      
+   prop_information[0].markdown(
       f'''
-      In the **{len(prop_data)} game sample size** with the given splits, this prop has an average of {round(np.mean(prop_data[prop_type]), 1)}.\n
-      The over has a record of {wins}-{losses} and a hit rate of {round(hit_rate * 100, 1)}% and an implied probability of {round(pybet.implied_probability(over_odds) * 100, 1)}%. This gives an expected profit of {ev_over} on a 1u bet.\n
-      The under has a hit rate of {round((1 - hit_rate) * 100, 1)}% and an implied probability of {round(pybet.implied_probability(under_odds) * 100, 1)}%. This gives an expected profit of {ev_under} on a 1u bet.
-      ''')
+      In the **{len(prop_data)} game sample size** with the given splits, this prop has an average of **{round(np.mean(prop_data[prop_type]), 2)}**.\n
+      The over has a record of **{wins}-{losses}**, a hit rate of <span style="color: {over_color};">**{round(hit_rate * 100, 1)}%**</span>, and an implied probability of **{round(pybet.implied_probability(over_odds) * 100, 1)}%.** This gives an expected profit of
+      <span style="color: {over_color};">**{ev_over}**</span> on a 1u bet.\n
+      The under has a record of **{losses}-{wins}**, a hit rate of <span style="color: {under_color};">**{round((1 - hit_rate) * 100, 1)}**%</span>, and an implied probability of **{round(pybet.implied_probability(under_odds) * 100, 1)}%**.
+      This gives an expected profit of <span style="color: {under_color};">**{ev_under}**</span> on a 1u bet.
+      ''', unsafe_allow_html=True)
    
 with team_based:
    # PAGE HEADER
-   st.header("Team-Based NBA Prop Research")
    st.markdown('''
+               ### Opponent-Based NBA Prop Research
                Below are all player counting statistics this season. Utilize the filters to parse down
-               the data. For example, you can answer the question *how have point guards shooting at least 40% from three
+               the data. For example, you can answer the question *how many three-pointers have point guards shooting at least 40% of their shots from downtown
                been averaging against the Milwaukee Bucks in the last 10 games?*
                ''')
 
@@ -410,37 +446,48 @@ with team_based:
    st.dataframe(matchup_data, use_container_width=True)
    
    # Summarize the Data
-   proj_mins = st.columns([3, 1])
+   proj_mins = st.columns([3, 0.5, 2])
    proj_mins[0].markdown('''
-      The matchups you choose have the following rates per minute of play. You can set a projected number of minutes to
-      get the corresponding projections for the player, based off of the opponent's allowed production.
+      **The matchups you choose have the following rates. You can set a projected number of minutes to
+      get the corresponding projections for the player, based off of the opponent's allowed production.**
    ''')
-   proj_min = proj_mins[1].number_input('Projected Minutes', value=36)
+   proj_min = proj_mins[2].number_input('Projected Minutes', value=36)
    sum_df = pd.DataFrame()
-   sum_df['Rate'] = ['Per Minute', f'Per {proj_min} Minutes']
-   sum_df['Games'] = [len(matchup_data)] * 2
-   sum_df['Points per Minute'] = [
+   sum_df['Rate'] = ['Per Minute', f'Per {proj_min} Minutes', 'Per Game']
+   sum_df['Games'] = [len(matchup_data)] * 3
+   sum_df['Points'] = [
       np.sum(matchup_data.Points) / np.sum(matchup_data.Minutes),
-      round(np.sum(matchup_data.Points) / np.sum(matchup_data.Minutes) * proj_min, 2)
+      round(np.sum(matchup_data.Points) / np.sum(matchup_data.Minutes) * proj_min, 2),
+      round(np.mean(matchup_data.Points), 2)
    ]
-   sum_df['Rebounds per Minute'] = [
+   sum_df['Rebounds'] = [
       np.sum(matchup_data.Rebounds) / np.sum(matchup_data.Minutes),
-      round(np.sum(matchup_data.Rebounds) / np.sum(matchup_data.Minutes) * proj_min, 2)
+      round(np.sum(matchup_data.Rebounds) / np.sum(matchup_data.Minutes) * proj_min, 2),
+      round(np.mean(matchup_data.Points), 2)
    ]
-   sum_df['Assists per Minute'] = [
+   sum_df['Assists'] = [
       np.sum(matchup_data.Assists) / np.sum(matchup_data.Minutes),
-      round(np.sum(matchup_data.Assists) / np.sum(matchup_data.Minutes) * proj_min, 2)
+      round(np.sum(matchup_data.Assists) / np.sum(matchup_data.Minutes) * proj_min, 2),
+      round(np.mean(matchup_data.Points), 2)
    ]
-   sum_df['3PM per Minute'] = [
+   sum_df['Steals'] = [
+      np.sum(matchup_data.Steals) / np.sum(matchup_data.Minutes),
+      round(np.sum(matchup_data.Steals) / np.sum(matchup_data.Minutes) * proj_min, 2),
+      round(np.mean(matchup_data.Points), 2)
+   ]
+   sum_df['3PM'] = [
       np.sum(matchup_data.FG3M) / np.sum(matchup_data.Minutes),
-      round(np.sum(matchup_data.FG3M) / np.sum(matchup_data.Minutes) * proj_min, 2)
+      round(np.sum(matchup_data.FG3M) / np.sum(matchup_data.Minutes) * proj_min, 2),
+      round(np.mean(matchup_data.Points), 2)
    ]
-   sum_df['Tov per Minute'] = [
+   sum_df['Tov'] = [
       np.sum(matchup_data.Turnovers) / np.sum(matchup_data.Minutes),
-      round(np.sum(matchup_data.Turnovers) / np.sum(matchup_data.Minutes) * proj_min, 2)
+      round(np.sum(matchup_data.Turnovers) / np.sum(matchup_data.Minutes) * proj_min, 2),
+      round(np.mean(matchup_data.Points), 2)
    ]
-   sum_df['FTM per Minute'] = [
+   sum_df['FTM'] = [
       np.sum(matchup_data.FTM) / np.sum(matchup_data.Minutes),
-      round(np.sum(matchup_data.FTM) / np.sum(matchup_data.Minutes) * proj_min, 2)
+      round(np.sum(matchup_data.FTM) / np.sum(matchup_data.Minutes) * proj_min, 2),
+      round(np.mean(matchup_data.Points), 2)
    ]
    st.dataframe(sum_df, use_container_width=True)
